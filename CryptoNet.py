@@ -2,6 +2,7 @@ from poloniex import polonitrade
 import time, datetime, math
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plt
 
 start_time = time.time()
 
@@ -13,9 +14,9 @@ key = 'WRO9ZNTF-4H6TUE1Q-G50LJUF0-JH6JV4SH'
 def main():
 	batch = createBatch()
 	time0 = time.time()
-	print('batch = [time, total, rate, type]')
-	print(batch[10:])
-	print('batch shape:',batch.shape)
+	print('batch = [time, total, rate, order_type]')
+	print(batch[:10])
+	print('batch length:',len(batch))
 	print('createBatch time:',time0 - start_time,'\n')
 
 
@@ -32,7 +33,7 @@ def main():
 	print(training_data[:5])
 	print('training_data shape:',training_data.shape)
 	print('createTrainingData time:',time2 - start_time,'\n')
-	
+
 
 	'''tfGraph(training_data,labels,i_nodes,o_nodes)'''
 
@@ -42,7 +43,7 @@ def createBatch():
 	pt = polonitrade.Poloniex()
 	cP = 'USDT_BTC'
 	batches = 1
-	batch = np.empty([50000 * batches,4])
+	batch = []
 
 	batch_time = time.time()
 	for b in range(batches):
@@ -58,11 +59,8 @@ def createBatch():
 				order_type = 1.0
 			else:
 				order_type = -1.0
-			reverse = -1 - ((b * 50000) + n)
-			batch[reverse][0] = t_time
-			batch[reverse][1] = total
-			batch[reverse][2] = rate
-			batch[reverse][3] = order_type
+			t_list = [t_time, total, rate, order_type]
+			batch.insert(0,t_list)
 	return batch
 
 
@@ -83,11 +81,28 @@ def createLabels(batch,o_nodes):
 	for key in sorted(temp):
 		avg_rate_from_temp = temp[key][1] / (temp[key][0])
 		labels[key] = avg_rate_from_temp
-	return labels
+	'''oldest to newest.
+	use labels dict to interpolate values for new dictionary
+	for time: price with keys increasing at one second intervals'''
+	start_time = min(labels)
+	end_time = max(labels)
+	xvals = np.arange(start_time, end_time)
+	xp = []
+	fp = []
+	for key in sorted(labels):
+		xp.append(key)
+		fp.append(labels[key])
+	interpolated_labels = np.interp(xvals, xp, fp)
+	interpolated_labels_dict = {}
+	for x in range(xvals.shape[0]):
+		interpolated_labels_dict[xvals[x]] = interpolated_labels[x]
+	plt.plot(xvals,interpolated_labels,'-')
+	plt.show()
+	return interpolated_labels_dict
 
 
 def createTrainingData(batch, labels, i_nodes):
-	batch_length = batch.shape[0]
+	batch_length = len(batch)
 	training_data = np.empty([batch_length,i_nodes + 1])
 
 	for current_t in range(batch_length - i_nodes):
@@ -105,6 +120,7 @@ def createTrainingData(batch, labels, i_nodes):
 	return training_data
 
 # not complete
+'''
 def tfGraph(training_data,labels,i_nodes,o_nodes):
 	sess = tf.Session()
 	x = tf.placeholder(tf.float32,shape=[None, i_nodes])
@@ -131,9 +147,7 @@ def tfGraph(training_data,labels,i_nodes,o_nodes):
 	correct_prediction = tf.equal(tf.argmax(y,1), tf.argmax(y_,1))
 	accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 	print(accuracy.eval(feed_dict={x: mnist.test.images, y_: mnist.test.labels}))
-
-
-
+'''
 
 main()
 
