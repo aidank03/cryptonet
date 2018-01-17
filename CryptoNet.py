@@ -2,43 +2,31 @@ from poloniex import polonitrade
 import time, datetime, math
 import tensorflow as tf
 import numpy as np
+np.set_printoptions(threshold=np.inf)
 import matplotlib.pyplot as plt
-
-start_time = time.time()
 
 secret = '782c06450cacda6c91c5f6ea2842e7c70b1a86889721922c711c749dd86be9819ee3e1264fa6a3bfdc0f90660629ecef88182da3788e9cee0831cf1f1b8e32a8'
 key = 'WRO9ZNTF-4H6TUE1Q-G50LJUF0-JH6JV4SH'
 
-
-
+start_time = time.time()
 def main():
+	i_nodes = 360
+	o_nodes = 180
+
 	batch = createBatch()
 	time0 = time.time()
-	print('batch = [time, total, rate, order_type]')
-	print(batch[:10])
 	print('batch length:',len(batch))
 	print('createBatch time:',time0 - start_time,'\n')
 
-
-	o_nodes = 30
-	labels = createLabels(batch,o_nodes)
-	time1 = time.time()
-	print('labels length:',len(labels))
-	print('createLabels time:',time1 - start_time)
-
-
-	i_nodes = 180
-	training_data = createTrainingData(batch, labels, i_nodes)
+	data, labels = createDataAndLabels(batch, i_nodes, o_nodes)
 	time2 = time.time()
-	print(training_data[:5])
-	print('training_data shape:',training_data.shape)
-	print('createTrainingData time:',time2 - start_time,'\n')
+	print('data and labels shape:', data.shape, labels.shape)
+	print('createDataAndLabels time:',time2 - start_time,'\n')
+
+	tfGraph(data,labels,i_nodes,o_nodes)
 
 
-	'''tfGraph(training_data,labels,i_nodes,o_nodes)'''
-
-
-# create array filled with relevant info (oldest to newest)
+#create array filled with relevant info (oldest to newest)
 def createBatch():
 	pt = polonitrade.Poloniex()
 	cP = 'USDT_BTC'
@@ -47,7 +35,7 @@ def createBatch():
 
 	batch_time = time.time()
 	for b in range(batches):
-		next_batch = pt.marketTradeHist(currencyPair=cP,start=0,end=batch_time)
+		next_batch = pt.marketTradeHist(currencyPair=cP,start=0,end=batch_time) #newest to oldest
 		batch_time = int(time.mktime(datetime.datetime.strptime(next_batch[-1]['date'], "%Y-%m-%d %H:%M:%S").timetuple()))
 		for n in range(len(next_batch)):
 			transaction = next_batch[n]
@@ -64,64 +52,76 @@ def createBatch():
 	return batch
 
 
-def createLabels(batch,o_nodes):
-	labels = {}
+def createDataAndLabels(batch, i_nodes, o_nodes):
+	data_len = len(batch) - i_nodes
+	data = np.empty([data_len, i_nodes])
+	times_temp = np.empty([data_len])
+
+	'''
+	create data and matching time signatures
+	'''
+	for x in range(data_len):
+		root_transaction = batch[x + i_nodes]
+		times_temp[x] = root_transaction[0] #store root_transaction time
+		rate_diff = np.empty([i_nodes]) #to store rate difference between root and previous <i_nodes> transactions
+		for pt in range(i_nodes):
+			branch_transaction = batch[x + pt]
+			rate_diff = abs(root_transaction[2] - branch_transaction[2])
+			munge = math.log1p(root_transaction[1] * rate_diff)
+			if branch_transaction[3] < 0.0:
+				munge *= -1.0
+			data[x][pt] = munge
+
+	temp_labels = {}
 	temp = {}
 	for t in batch:
 		t_time = t[0]
 		t_rate = t[2]
-		if t_time in labels:
+		if t_time in temp_labels:
 			if t_time in temp:
 				temp[t_time][0] += 1
 				temp[t_time][1] += t_rate
 			else:
 				temp[t_time] = [1,t_rate]
 		else:
-			labels[t_time] = t_rate
+			temp_labels[t_time] = t_rate
 	for key in sorted(temp):
-		avg_rate_from_temp = temp[key][1] / (temp[key][0])
-		labels[key] = avg_rate_from_temp
-	'''oldest to newest.
-	use labels dict to interpolate values for new dictionary
-	for time: price with keys increasing at one second intervals'''
-	start_time = min(labels)
-	end_time = max(labels)
-	xvals = np.arange(start_time, end_time)
-	xp = []
-	fp = []
-	for key in sorted(labels):
-		xp.append(key)
-		fp.append(labels[key])
-	interpolated_labels = np.interp(xvals, xp, fp)
-	interpolated_labels_dict = {}
-	for x in range(xvals.shape[0]):
-		interpolated_labels_dict[xvals[x]] = interpolated_labels[x]
-	plt.plot(xvals,interpolated_labels,'-')
-	plt.show()
-	return interpolated_labels_dict
+		occurence = temp[key][0]
+		price_sum = temp[key][1]
+		if key in temp_labels:
+			occurence += 1
+			price_sum += temp_labels[key]
+		avg_rate = price_sum / occurence
+		temp_labels[key] = avg_rate
+
+	'''
+	interpolate market values for actual time span
+	store in dict as 'time interval: market price (interpolated)'
+	'''
+	x_points = []
+	y_points = []
+	for key in sorted(temp_labels):
+		x_points.append(key)
+		y_points.append(temp_labels[key])
+	start_time, end_time = times_temp[0], times_temp[-1]
+	time_range = np.arange(start_time, end_time)
+	price_interpolation = np.interp(time_range, x_points, y_points)
+	price_at_time = {}
+	for x in range(price_interpolation.shape[0]):
+		price_at_time[time_range[x]] = price_interpolation[x]
+
+	'''store label in array with idexes corresponding to data array'''
+	labels = np.empty([data_len, o_nodes])
+	for fill_labels in range(data_len):
+		for fill_nodes in range(o_nodes):
+			x = float(fill_nodes)
+			if times_temp[fill_labels] + x in price_at_time:
+				labels[fill_labels][fill_nodes] = price_at_time[times_temp[fill_labels] + x]
+
+	return data, labels
 
 
-def createTrainingData(batch, labels, i_nodes):
-	batch_length = len(batch)
-	training_data = np.empty([batch_length,i_nodes + 1])
-
-	for current_t in range(batch_length - i_nodes):
-		training_data[current_t][0] = batch[current_t + i_nodes][0]
-		rate_diff = np.empty([i_nodes])
-		transaction = batch[current_t + i_nodes]
-		log_total = math.log1p(transaction[1])
-		for previous_t in range(i_nodes):
-			p = batch[current_t - previous_t]
-			log_rate_diff = math.log1p(abs(transaction[2] - p[2]))
-			munge = math.log1p(log_total * log_rate_diff)
-			if p[3] < 0.0:
-				munge *= -1.0
-			training_data[current_t][previous_t + 1] = munge
-	return training_data
-
-# not complete
-'''
-def tfGraph(training_data,labels,i_nodes,o_nodes):
+def tfGraph(data,labels,i_nodes,o_nodes):
 	sess = tf.Session()
 	x = tf.placeholder(tf.float32,shape=[None, i_nodes])
 	y_ = tf.placeholder(tf.float32, shape=[None, o_nodes])
@@ -136,18 +136,24 @@ def tfGraph(training_data,labels,i_nodes,o_nodes):
 	cross_entropy = tf.reduce_mean(
     tf.nn.softmax_cross_entropy_with_logits(labels=y_, logits=y))
 
-	train_step = tf.train.GradientDescentOptimizer(0.5).minimize(cross_entropy)
+	train_step = tf.train.GradientDescentOptimizer(0.02).minimize(cross_entropy)
 
+	batch_size = 1000
+	training_slice = int((data.shape[0] / batch_size) * 3/4)
+	for step in range(training_slice):
+		train_data = data[step * batch_size:(step + 1) * batch_size]
+		train_labels = labels[step * batch_size:(step + 1) * batch_size]
+		train_step.run(session=sess,feed_dict={x: train_data, y_: train_labels})
+		print('Training cycle:',step)
 
-	for cycle in range(100):
-  		train_batch = training_data[cycle * 100:(cycle+1) *100][1:]
-		label_batch = labels[training_data[cycle * 100:(cycle+1) *100][0]]
-  		train_step.run(feed_dict={x: train_batch, y_: label_batch})
+	test_data = data[training_slice:]
+	test_labels = labels[training_slice:]
+	print(test_data.shape, test_labels.shape)
 
 	correct_prediction = tf.equal(tf.argmax(y,1), tf.argmax(y_,1))
 	accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-	print(accuracy.eval(feed_dict={x: mnist.test.images, y_: mnist.test.labels}))
-'''
+	print(accuracy.eval(session=sess,feed_dict={x: test_data, y_: test_labels}))
+
 
 main()
 
